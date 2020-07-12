@@ -23,7 +23,7 @@
 #endif
 #define _shavit_included
 
-#define SHAVIT_VERSION "2.5.7"
+#define SHAVIT_VERSION "2.6.0"
 #define STYLE_LIMIT 256
 #define MAX_ZONES 64
 #define MAX_NAME_LENGTH_SQL 32
@@ -217,6 +217,8 @@ enum struct timer_snapshot_t
 	int iTimerTrack;
 	int iMeasuredJumps;
 	int iPerfectJumps;
+	float fTimeOffset[2];
+	float fDistanceOffset[2];
 }
 
 enum struct cp_cache_t
@@ -239,6 +241,7 @@ enum struct cp_cache_t
 	int iClassname;
 	ArrayList aFrames;
 	int iPreFrames;
+	int iTimerPreFrames;
 	bool bSegmented;
 	int iSerial;
 	bool bPractice;
@@ -400,7 +403,7 @@ stock void FormatSeconds(float time, char[] newtime, int newtimesize, bool preci
 	if(fTempTime < 60.0)
 	{
 		strcopy(newtime, newtimesize, sSeconds);
-		FormatEx(newtime, newtimesize, "%s%s", (fSeconds < 0.0) ? "-":"", sSeconds);
+		FormatEx(newtime, newtimesize, "%s%s", (time < 0.0) ? "-":"", sSeconds);
 	}
 
 	else
@@ -788,6 +791,17 @@ forward Action Shavit_OnClanTagChangePre(int client, char[] clantag, int clantag
  * @noreturn							
  */
 forward void Shavit_OnClanTagChangePost(int client, char[] customtag, int customtaglength);
+
+/**
+ * Called when a time offset is calculated
+ *
+ * @param client					Client index.
+ * @param zonetype					Zone type (Zone_Start or Zone_End).
+ * @param offset					Time offset from the given zone.
+ * @param distance					Distance used in time offset.
+ * @noreturn							
+ */
+forward void Shavit_OnTimeOffsetCalculated(int client, int zonetype, float offset, float distance);
 
 /**
  * Called before the timer finish message is printed to the users.
@@ -1208,6 +1222,24 @@ native void Shavit_PauseTimer(int client);
 native void Shavit_ResumeTimer(int client, bool teleport = false);
 
 /**
+ * Gets a players time offset given a zone.
+ *
+ * @param client					Client index.
+ * @param teleport					Zone type (Zone_Start or Zone_End).
+ * @return							Time offset if any for the given zone type.
+ */
+native float Shavit_GetTimeOffset(int client, int zonetype);
+
+/**
+ * Gets distance of a players distance offset given a zone.
+ *
+ * @param client					Client index.
+ * @param teleport					Zone type  (Zone_Start or Zone_End).
+ * @return 							Distance offset if any for the given zone type/
+ */
+native float Shavit_GetDistanceOffset(int client, int zonetype);
+
+/**
  * Deletes the specified replay file.
  * Replay data will be unloaded if necessary.
  *
@@ -1398,9 +1430,10 @@ native int Shavit_GetWRCount(int client);
 *
 * @param style						Style index.
 * @param StyleSettings				Reference to the settings array.
+* @param size						Size of the StyleSettings buffer, e.g sizeof(stylesettings_t)
 * @return							SP_ERROR_NONE on success, anything else on failure.
 */
-native int Shavit_GetStyleSettings(int style, any StyleSettings[sizeof(stylesettings_t)]);
+native int Shavit_GetStyleSettings(int style, any[] StyleSettings, int size = sizeof(stylesettings_t));
 
 /**
  * Saves the style related strings on string references.
@@ -1474,18 +1507,20 @@ native bool Shavit_IsPracticeMode(int client);
  *
  * @param client					Client index.
  * @param snapshot					Full snapshot of the client's timer.
+ * @param size						Size of the snapshot buffer, e.g sizeof(timer_snapshot_t)
  * @noreturn
  */
-native void Shavit_SaveSnapshot(int client, any snapshot[sizeof(timer_snapshot_t)]);
+native void Shavit_SaveSnapshot(int client, any[] snapshot, int size = sizeof(timer_snapshot_t));
 
 /**
  * Restores the client's timer from a snapshot.
  *
  * @param client					Client index.
  * @param snapshot					Full snapshot of the client's timer.
+ * @param size						Size of the snapshot buffer, e.g sizeof(timer_snapshot_t)
  * @noreturn
  */
-native void Shavit_LoadSnapshot(int client, any snapshot[sizeof(timer_snapshot_t)]);
+native void Shavit_LoadSnapshot(int client, any[] snapshot, int size = sizeof(timer_snapshot_t));
 
 /**
  * Sets a player's replay recording frames from a provided ArrayList.
@@ -1507,6 +1542,15 @@ native void Shavit_SetReplayData(int client, ArrayList data);
 native ArrayList Shavit_GetReplayData(int client);
 
 /**
+ * Starts a replay given a style and track. 
+ * @param client					Client index.
+ * @param style						Bhop style.
+ * @param track						Timer track.
+ * @noreturn							
+ */
+native void Shavit_StartReplay(int style, int track, float delay, int client = 1);
+
+/**
  * Reloads a specific replay into the replay bot cache.
  * Note: Not guaranteed to work with legacy replay bots.
  *
@@ -1515,7 +1559,7 @@ native ArrayList Shavit_GetReplayData(int client);
  * @param restart					Restart the playback of the replay bot if it's playing?
  * @param path						Path to the replay file. Use `BuildPath(Path_SM, ...)` to generate one. Leave as empty to use default.
  * @return							Was the replay loaded?
- */
+ */ 
 native bool Shavit_ReloadReplay(int style, int track, bool restart, char[] path = "");
 
 /**
@@ -1526,6 +1570,16 @@ native bool Shavit_ReloadReplay(int style, int track, bool restart, char[] path 
  * @return							Amount of loaded replays.
  */
 native int Shavit_ReloadReplays(bool restart);
+
+/**
+ * Gets time from replay frame that is closest to client.
+ *
+ * @param 				Client index.
+ * @param				Client style.
+ * @param				Client track.
+ * @return				Replay time.
+ */
+native float Shavit_GetClosestReplayTime(int client, int style, int track);
 
 /**
  * Use this native to stop the click sound that plays upon chat messages.
@@ -1629,22 +1683,25 @@ native void Shavit_LogMessage(const char[] format, any ...);
  *
  * @param client					Client index
  * @param index						Index of CP to get
- * @param cpcache					Buffer to store cp data in
+ * @param cpcache					Buffer to store cp data in sizeof(cp_cache_t)
+ * @param size						Size of the cpcache buffer, e.g sizeof(cp_cache_t)
  *
  * @noreturn
  */
-native bool Shavit_GetCheckpoint(int client, int index, any cpcache[sizeof(cp_cache_t)]);
+native bool Shavit_GetCheckpoint(int client, int index, any[] cpcache, int size = sizeof(cp_cache_t));
 
 /**
  * Sets checkpoint data at the given index for the given client
  *
  * @param client					Client index
  * @param index						Index of CP to set, or -1 to push cp as last
+ * @param cpcache					Buffer to store cp data in sizeof(cp_cache_t)
+ * @param size						Size of the cpcache buffer, e.g sizeof(cp_cache_t)
  * @param cpcache					Buffer with cp data
  *
  * @noreturn
  */
-native void Shavit_SetCheckpoint(int client, int index, any cpcache[sizeof(cp_cache_t)]);
+native void Shavit_SetCheckpoint(int client, int index, any[] cpcache, int size = sizeof(cp_cache_t));
 
 /**
  * Teleports client to the checkpoint at given index
@@ -1742,46 +1799,34 @@ native void Shavit_SetCurrentCheckpoint(int client, int index);
 native int Shavit_GetPlayerPreFrame(int client);
 
 /*
+ * returns the number of timer preframes in the players current run.
+ *
+ * @param client					Client index
+ *
+ * @return 							Timer preframe count
+ */
+ native int Shavit_GetPlayerTimerFrame(int client);
+
+/*
  * Sets player's preframe length.
  *
  * @param client					Client index
- * @param preframe					preframe length
+ * @param PreFrame					PreFrame length
+ * @param TimerPreFrame				Timer start frame length
  *
  * @noreturn
  */
-native void Shavit_SetPlayerPreFrame(int client, int preframe);
+native void Shavit_SetPlayerPreFrame(int client, int PreFrame);
 
 /*
- * Get preframe length from specific replay
+ * Sets player's timer preframe length.
  *
- * @param stlye						Style
- * @param track						Track 
+ * @param client					Client index
+ * @param TimerPreFrame				Timer start frame length
  *
- * @return Replay preframe 
+ * @noreturn
  */
-native int Shavit_GetReplayPreFrameCount(int style, int track);
-
-// I need a native English speaker to polish these two natives >_>  ---- deadwinter
-
-/* description here
- * 
- * @param clinet					Client index
- * @param stlye						Style
- * @param track						Track 
- *
- * @return Frame
- */
-native int Shavit_GetClientCurrentFrame(int client, int style, int track);
-
-/* description here
- * 
- * @param clinet					Client index
- * @param stlye						Style
- * @param track						Track 
- *
- * @return Frame Time
- */
-native float Shavit_GetClientCurrentFrameTime(int client, int style, int track);
+ native void Shavit_SetPlayerTimerFrame(int client, int TimerPreFrame);
 
 // same as Shavit_PrintToChat() but loops through the whole server
 // code stolen from the base halflife.inc file
@@ -1859,6 +1904,8 @@ public void __pl_shavit_SetNTVOptional()
 	MarkNativeAsOptional("Shavit_GetStyleSettings");
 	MarkNativeAsOptional("Shavit_GetStyleStrings");
 	MarkNativeAsOptional("Shavit_GetSync");
+	MarkNativeAsOptional("Shavit_GetTimeOffset");
+	MarkNativeAsOptional("Shavit_GetDistanceOffset");
 	MarkNativeAsOptional("Shavit_GetTimeForRank");
 	MarkNativeAsOptional("Shavit_GetTimer");
 	MarkNativeAsOptional("Shavit_GetTimerStatus");
@@ -1893,6 +1940,7 @@ public void __pl_shavit_SetNTVOptional()
 	MarkNativeAsOptional("Shavit_SaveSnapshot");
 	MarkNativeAsOptional("Shavit_SetPracticeMode");
 	MarkNativeAsOptional("Shavit_SetReplayData");
+	MarkNativeAsOptional("Shavit_StartReplay");
 	MarkNativeAsOptional("Shavit_StartTimer");
 	MarkNativeAsOptional("Shavit_StopChatSound");
 	MarkNativeAsOptional("Shavit_StopTimer");
@@ -1911,10 +1959,9 @@ public void __pl_shavit_SetNTVOptional()
 	MarkNativeAsOptional("Shavit_GetCurrentCheckpoint");
 	MarkNativeAsOptional("Shavit_SetCurrentCheckpoint");
 	MarkNativeAsOptional("Shavit_GetPlayerPreFrame");
-	MarkNativeAsOptional("Shavit_GetPlayerTimerframe");
+	MarkNativeAsOptional("Shavit_GetPlayerTimerFrame");
 	MarkNativeAsOptional("Shavit_SetPlayerPreFrame");
-	MarkNativeAsOptional("Shavit_GetReplayPreFrameCount");
-	MarkNativeAsOptional("Shavit_GetClientCurrentFrame");
-	MarkNativeAsOptional("Shavit_GetClientCurrentFrameTime");
+	MarkNativeAsOptional("Shavit_GetClosestReplayTime");
+	MarkNativeAsOptional("Shavit_SetPlayerTimerFrame");
 }
 #endif
