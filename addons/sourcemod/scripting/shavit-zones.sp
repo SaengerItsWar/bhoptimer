@@ -124,6 +124,7 @@ float gV_MapZones[MAX_ZONES][2][3];
 float gV_MapZones_Visual[MAX_ZONES][8][3];
 float gV_Destinations[MAX_ZONES][3];
 float gV_ZoneCenter[MAX_ZONES][3];
+int gI_StageZoneID[MAX_ZONES];
 int gI_EntityZone[4096];
 bool gB_ZonesCreated = false;
 
@@ -147,6 +148,7 @@ Convar gCV_UseCustomSprite = null;
 Convar gCV_Height = null;
 Convar gCV_Offset = null;
 Convar gCV_EnforceTracks = null;
+Convar gCV_BoxOffset = null;
 
 // handles
 Handle gH_DrawEverything = null;
@@ -180,6 +182,7 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 	// zone natives
 	CreateNative("Shavit_GetZoneData", Native_GetZoneData);
 	CreateNative("Shavit_GetZoneFlags", Native_GetZoneFlags);
+	CreateNative("Shavit_GetStageZone", Native_GetStageZone);
 	CreateNative("Shavit_InsideZone", Native_InsideZone);
 	CreateNative("Shavit_InsideZoneGetID", Native_InsideZoneGetID);
 	CreateNative("Shavit_IsClientCreatingZone", Native_IsClientCreatingZone);
@@ -248,7 +251,8 @@ public void OnPluginStart()
 	gCV_UseCustomSprite = new Convar("shavit_zones_usecustomsprite", "1", "Use custom sprite for zone drawing?\nSee `configs/shavit-zones.cfg`.\n0 - Disabled\n1 - Enabled", 0, true, 0.0, true, 1.0);
 	gCV_Height = new Convar("shavit_zones_height", "128.0", "Height to use for the start zone.", 0, true, 0.0, false);
 	gCV_Offset = new Convar("shavit_zones_offset", "0.5", "When calculating a zone's *VISUAL* box, by how many units, should we scale it to the center?\n0.0 - no downscaling. Values above 0 will scale it inward and negative numbers will scale it outwards.\nAdjust this value if the zones clip into walls.");
-	gCV_EnforceTracks = new Convar("shavit_zones_enforcetracks", "1", "Enforce zone tracks upon entry?\n0 - allow every zone except for start/end to affect users on every zone.\n1- require the user's track to match the zone's track.", 0, true, 0.0, true, 1.0);
+	gCV_EnforceTracks = new Convar("shavit_zones_enforcetracks", "1", "Enforce zone tracks upon entry?\n0 - allow every zone except for start/end to affect users on every zone.\n1 - require the user's track to match the zone's track.", 0, true, 0.0, true, 1.0);
+	gCV_BoxOffset = new Convar("shavit_zones_box_offset", "16", "Offset zone trigger boxes by this many unit\n0 - matches players bounding box\n16 - matches players center");
 
 	gCV_Interval.AddChangeHook(OnConVarChanged);
 	gCV_UseCustomSprite.AddChangeHook(OnConVarChanged);
@@ -485,6 +489,13 @@ public int Native_InsideZoneGetID(Handle handler, int numParams)
 	return false;
 }
 
+public int Native_GetStageZone(Handle handler, int numParams)
+{
+	int iStageNumber = GetNativeCell(1);
+	
+	return gI_StageZoneID[iStageNumber];
+}
+
 public int Native_Zones_DeleteMap(Handle handler, int numParams)
 {
 	char sMap[160];
@@ -660,7 +671,8 @@ public void OnMapStart()
 	ReloadPrebuiltZones();
 	UnloadZones(0);
 	RefreshZones();
-
+	LoadStageZones();
+	
 	LoadZoneSettings();
 	
 	if(gEV_Type == Engine_TF2)
@@ -684,6 +696,30 @@ public void OnMapStart()
 	{
 		Shavit_OnChatConfigLoaded();
 	}
+}
+
+public void LoadStageZones()
+{
+	char sQuery[256];
+	FormatEx(sQuery, 256, "SELECT id, data FROM mapzones WHERE type = %i and map = '%s'", Zone_Stage, gS_Map);
+	PrintToChatAll("%s", sQuery);
+	gH_SQL.Query(SQL_GetStageZone_Callback, sQuery,0, DBPrio_High);
+}
+
+public void SQL_GetStageZone_Callback(Database db, DBResultSet results, const char[] error, any data)
+{
+	if(results == null)
+	{
+		LogError("Timer (zones GetStageZone) SQL query failed. Reason: %s", error);
+		return;
+	}
+	
+	while(results.FetchRow())
+	{
+		int iZoneID = results.FetchInt(0);
+		int iStageNumber = results.FetchInt(1);
+		gI_StageZoneID[iStageNumber] = iZoneID;
+	} 
 }
 
 public void OnMapEnd()
@@ -2887,14 +2923,14 @@ public void CreateZoneEntities()
 		float height = ((IsSource2013(gEV_Type))? 62.0:72.0) / 2;
 
 		float min[3];
-		min[0] = -distance_x + 16.0;
-		min[1] = -distance_y + 16.0;
+		min[0] = -distance_x + gCV_BoxOffset.FloatValue;
+		min[1] = -distance_y + gCV_BoxOffset.FloatValue;
 		min[2] = -distance_z + height;
 		SetEntPropVector(entity, Prop_Send, "m_vecMins", min);
 
 		float max[3];
-		max[0] = distance_x - 16.0;
-		max[1] = distance_y - 16.0;
+		max[0] = distance_x - gCV_BoxOffset.FloatValue;
+		max[1] = distance_y - gCV_BoxOffset.FloatValue;
 		max[2] = distance_z - height;
 		SetEntPropVector(entity, Prop_Send, "m_vecMaxs", max);
 
@@ -2955,7 +2991,7 @@ public void StartTouchPost(int entity, int other)
 
 		case Zone_End:
 		{
-			if(status != Timer_Stopped && Shavit_GetClientTrack(other) == gA_ZoneCache[gI_EntityZone[entity]].iZoneTrack)
+			if(status != Timer_Stopped && !Shavit_IsPaused(other) && Shavit_GetClientTrack(other) == gA_ZoneCache[gI_EntityZone[entity]].iZoneTrack)
 			{
 				Shavit_FinishMap(other, gA_ZoneCache[gI_EntityZone[entity]].iZoneTrack);
 			}
@@ -3089,7 +3125,7 @@ public void UsePost(int entity, int activator, int caller, UseType type, float v
 		Shavit_StartTimer(activator, track);
 	}
 
-	if(zone == Zone_End && Shavit_GetTimerStatus(activator) == Timer_Running && Shavit_GetClientTrack(activator) == track)
+	if(zone == Zone_End && !Shavit_IsPaused(activator) && Shavit_GetTimerStatus(activator) == Timer_Running && Shavit_GetClientTrack(activator) == track)
 	{
 		Shavit_FinishMap(activator, track);
 	}
@@ -3114,7 +3150,7 @@ public void StartTouchPost_Trigger(int entity, int other)
 
 	TimerStatus status = Shavit_GetTimerStatus(other);
 
-	if(zone == Zone_End && status != Timer_Stopped && Shavit_GetClientTrack(other) == track)
+	if(zone == Zone_End && !Shavit_IsPaused(other) && status != Timer_Stopped && Shavit_GetClientTrack(other) == track)
 	{
 		Shavit_FinishMap(other, track);
 	}
