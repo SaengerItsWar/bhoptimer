@@ -67,6 +67,7 @@ int gI_Tier = 1; // No floating numbers for tiers, sorry.
 
 char gS_Map[160];
 
+int gI_ValidMaps = 0;
 ArrayList gA_ValidMaps = null;
 StringMap gA_MapTiers = null;
 
@@ -85,6 +86,9 @@ Handle gH_Forwards_OnRankAssigned = null;
 // Timer settings.
 chatstrings_t gS_ChatStrings;
 int gI_Styles = 0;
+stylesettings_t gA_StyleSettings[STYLE_LIMIT];
+char gS_StyleNames[STYLE_LIMIT][64];
+char gS_TrackNames[TRACKS_SIZE][32];
 
 public Plugin myinfo =
 {
@@ -156,6 +160,11 @@ public void OnPluginStart()
 		Shavit_OnChatConfigLoaded();
 	}
 
+	for(int i = 0; i < TRACKS_SIZE; i++)
+	{
+		GetTrackName(LANG_SERVER, i, gS_TrackNames[i], 32);
+	}
+
 	SQL_DBConnect();
 }
 
@@ -174,6 +183,12 @@ public void Shavit_OnStyleConfigLoaded(int styles)
 	if(styles == -1)
 	{
 		gI_Styles = Shavit_GetStyleCount();
+	}
+
+	for(int i = 0; i < gI_Styles; i++)
+	{
+		Shavit_GetStyleSettings(i, gA_StyleSettings[i]);
+		Shavit_GetStyleStrings(i, sStyleName, gS_StyleNames[i], 64);
 	}
 }
 
@@ -419,7 +434,32 @@ public void SQL_FillTierCache_Callback(Database db, DBResultSet results, const c
 		Call_Finish();
 	}
 
+	gI_ValidMaps = gA_ValidMaps.Length;
 	SortADTArray(gA_ValidMaps, Sort_Ascending, Sort_String);
+}
+
+void GuessBestMapName(const char[] input, char[] output, int size)
+{
+	if(gA_ValidMaps.FindString(input) != -1)
+	{
+		strcopy(output, size, input);
+
+		return;
+	}
+
+	char sCache[128];
+
+	for(int i = 0; i < gI_ValidMaps; i++)
+	{
+		gA_ValidMaps.GetString(i, sCache, 128);
+
+		if(StrContains(sCache, input) != -1)
+		{
+			strcopy(output, size, sCache);
+
+			return;
+		}
+	}
 }
 
 public void OnMapEnd()
@@ -433,19 +473,16 @@ public Action Command_Tier(int client, int args)
 	int tier = gI_Tier;
 
 	char sMap[128];
+	strcopy(sMap, 128, gS_Map);
 
-	if(args == 0)
-	{
-		strcopy(sMap, 128, gS_Map);
-	}
-	
-	else
+	if(args > 0)
 	{
 		GetCmdArgString(sMap, 128);
-		if(!GuessBestMapName(gA_ValidMaps, sMap, sMap, 128) || !gA_MapTiers.GetValue(sMap, tier))
+		GuessBestMapName(sMap, sMap, 128);
+		
+		if(!gA_MapTiers.GetValue(sMap, tier))
 		{
-			Shavit_PrintToChat(client, "%t", "Map was not found", sMap);
-			return Plugin_Handled;
+			strcopy(sMap, 128, gS_Map);
 		}
 	}
 
@@ -577,21 +614,14 @@ public Action Command_RecalcAll(int client, int args)
 	{
 		char sQuery[192];
 
-		char unranked[4];
-		Shavit_GetStyleSetting(i, "unranked", unranked, 16);
-
-		char multiplier[16];
-		Shavit_GetStyleSetting(i, "rankingmultiplier", multiplier, 16);
-		float fMultiplier = StringToFloat(multiplier);
-
-		if(StringToInt(unranked) || fMultiplier == 0.0)
+		if(gA_StyleSettings[i].bUnranked || gA_StyleSettings[i].fRankingMultiplier == 0.0)
 		{
 			FormatEx(sQuery, 192, "UPDATE %splayertimes SET points = 0 WHERE style = %d;", gS_MySQLPrefix, i);
 		}
 
 		else
 		{
-			FormatEx(sQuery, 192, "UPDATE %splayertimes SET points = GetRecordPoints(%d, track, time, map, %.1f, %.3f) WHERE style = %d;", gS_MySQLPrefix, i, gCV_PointsPerTier.FloatValue, fMultiplier, i);
+			FormatEx(sQuery, 192, "UPDATE %splayertimes SET points = GetRecordPoints(%d, track, time, map, %.1f, %.3f) WHERE style = %d;", gS_MySQLPrefix, i, gCV_PointsPerTier.FloatValue, gA_StyleSettings[i].fRankingMultiplier, i);
 		}
 
 		trans.AddQuery(sQuery);
@@ -638,18 +668,16 @@ void RecalculateAll(const char[] map)
 	LogError("DEBUG: 5 (RecalculateAll)");
 	#endif
 
-	for(int i = 0; i < 3; i++)
+	for(int i = 0; i < TRACKS_SIZE; i++)
 	{
 		for(int j = 0; j < gI_Styles; j++)
 		{
-			char unranked[4];
-			Shavit_GetStyleSetting(j, "unranked", unranked, 4);
-			if(StringToInt(unranked))
+			if(gA_StyleSettings[j].bUnranked)
 			{
 				continue;
 			}
 
-			RecalculateMap(map, i, j, (i > Track_Bonus));
+			RecalculateMap(map, i, j);
 		}
 	}
 }
@@ -659,25 +687,15 @@ public void Shavit_OnFinish_Post(int client, int style, float time, int jumps, i
 	RecalculateMap(gS_Map, track, style);
 }
 
-void RecalculateMap(const char[] map, const int track, const int style, bool restOfTheBonuses=false)
+void RecalculateMap(const char[] map, const int track, const int style)
 {
 	#if defined DEBUG
 	PrintToServer("Recalculating points. (%s, %d, %d)", map, track, style);
 	#endif
 
 	char sQuery[256];
-	char multiplier[16];
-	Shavit_GetStyleSetting(style, "rankingmultiplier", multiplier, 16);
-	if (restOfTheBonuses)
-	{
-		FormatEx(sQuery, 256, "UPDATE %splayertimes SET points = GetRecordPoints(%d, track, time, '%s', %.1f, %.3f) WHERE style = %d AND track > 1 AND map = '%s';",
-		gS_MySQLPrefix, style, map, gCV_PointsPerTier.FloatValue, StringToFloat(multiplier), style, map);
-	}
-	else
-	{
-		FormatEx(sQuery, 256, "UPDATE %splayertimes SET points = GetRecordPoints(%d, %d, time, '%s', %.1f, %.3f) WHERE style = %d AND track = %d AND map = '%s';",
-		gS_MySQLPrefix, style, track, map, gCV_PointsPerTier.FloatValue, StringToFloat(multiplier), style, track, map);
-	}
+	FormatEx(sQuery, 256, "UPDATE %splayertimes SET points = GetRecordPoints(%d, %d, time, '%s', %.1f, %.3f) WHERE style = %d AND track = %d AND map = '%s';",
+		gS_MySQLPrefix, style, track, map, gCV_PointsPerTier.FloatValue, gA_StyleSettings[style].fRankingMultiplier, style, track, map);
 
 	gH_SQL.Query(SQL_Recalculate_Callback, sQuery, 0, DBPrio_High);
 
@@ -875,6 +893,20 @@ public void SQL_UpdateTop100_Callback(Database db, DBResultSet results, const ch
 	}
 
 	gH_Top100Menu.ExitButton = true;
+}
+
+void GetTrackName(int client, int track, char[] output, int size)
+{
+	if(track < 0 || track >= TRACKS_SIZE)
+	{
+		FormatEx(output, size, "%T", "Track_Unknown", client);
+
+		return;
+	}
+
+	static char sTrack[16];
+	FormatEx(sTrack, 16, "Track_%d", track);
+	FormatEx(output, size, "%T", sTrack, client);
 }
 
 public int Native_GetMapTier(Handle handler, int numParams)

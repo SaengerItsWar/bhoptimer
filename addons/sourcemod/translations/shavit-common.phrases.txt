@@ -9,14 +9,13 @@
 	{
 		"en"		"UNKNOWN TRACK"
 	}
-	"Track_Main"
+	"Track_0"
 	{
 		"en"		"Main"
 	}
-	"Track_Bonus"
+	"Track_1"
 	{
-		"#format"	"{1:d}"
-		"en"		"Bonus #{1}"
+		"en"		"Bonus"
 	}
 	// ---------- Commands ---------- //
 	"NoCommandAccess"

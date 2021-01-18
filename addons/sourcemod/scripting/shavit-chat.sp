@@ -100,7 +100,8 @@ bool gB_Protobuf = false;
 bool gB_NewMessage[MAXPLAYERS+1];
 StringMap gSM_Messages = null;
 
-char gS_ControlCharacters[][] = {"\x01", "\x02", "\x03", "\x04", "\x05", "\x06", "\x07", "\x08", "\x09",
+char gS_ControlCharacters[][] = { "\n", "\t", "\r",
+	"\x01", "\x02", "\x03", "\x04", "\x05", "\x06", "\x07", "\x08", "\x09",
 	"\x0A", "\x0B", "\x0C", "\x0D", "\x0E", "\x0F", "\x10" };
 
 public Plugin myinfo =
@@ -251,7 +252,7 @@ bool LoadChatSettings()
 
 	KeyValues kv = new KeyValues("shavit-chat");
 	
-	if(!kv.ImportFromFile(sPath))
+	if(!kv.ImportFromFile(sPath) || !kv.GotoFirstSubKey())
 	{
 		delete kv;
 
@@ -259,27 +260,23 @@ bool LoadChatSettings()
 	}
 
 	gSM_Messages.Clear();
-	bool failed;
 
 	if(gEV_Type == Engine_CSS)
 	{
-		failed = !kv.JumpToKey("CS:S");
+		kv.JumpToKey("CS:S");
 	}
 
 	else if(gEV_Type == Engine_CSGO)
 	{
-		failed = !kv.JumpToKey("CS:GO");
+		kv.JumpToKey("CS:GO");
 	}
 
 	if(gEV_Type == Engine_TF2)
 	{
-		failed = !kv.JumpToKey("TF2");
+		kv.JumpToKey("TF2");
 	}
 
-	if(failed || !kv.GotoFirstSubKey(false))
-	{
-		SetFailState("Invalid \"configs/shavit-chatsettings.cfg\" file, or the game section is missing");
-	}
+	kv.GotoFirstSubKey(false);
 
 	do
 	{

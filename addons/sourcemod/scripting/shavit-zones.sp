@@ -124,10 +124,8 @@ float gV_MapZones[MAX_ZONES][2][3];
 float gV_MapZones_Visual[MAX_ZONES][8][3];
 float gV_Destinations[MAX_ZONES][3];
 float gV_ZoneCenter[MAX_ZONES][3];
-int gI_StageZoneID[MAX_ZONES];
 int gI_EntityZone[4096];
 bool gB_ZonesCreated = false;
-int gI_LastStage[MAXPLAYERS+1];
 
 char gS_BeamSprite[PLATFORM_MAX_PATH];
 int gI_BeamSprite = -1;
@@ -183,7 +181,6 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 	// zone natives
 	CreateNative("Shavit_GetZoneData", Native_GetZoneData);
 	CreateNative("Shavit_GetZoneFlags", Native_GetZoneFlags);
-	CreateNative("Shavit_GetStageZone", Native_GetStageZone);
 	CreateNative("Shavit_InsideZone", Native_InsideZone);
 	CreateNative("Shavit_InsideZoneGetID", Native_InsideZoneGetID);
 	CreateNative("Shavit_IsClientCreatingZone", Native_IsClientCreatingZone);
@@ -490,13 +487,6 @@ public int Native_InsideZoneGetID(Handle handler, int numParams)
 	return false;
 }
 
-public int Native_GetStageZone(Handle handler, int numParams)
-{
-	int iStageNumber = GetNativeCell(1);
-	
-	return gI_StageZoneID[iStageNumber];
-}
-
 public int Native_Zones_DeleteMap(Handle handler, int numParams)
 {
 	char sMap[160];
@@ -672,8 +662,7 @@ public void OnMapStart()
 	ReloadPrebuiltZones();
 	UnloadZones(0);
 	RefreshZones();
-	LoadStageZones();
-	
+
 	LoadZoneSettings();
 	
 	if(gEV_Type == Engine_TF2)
@@ -697,30 +686,6 @@ public void OnMapStart()
 	{
 		Shavit_OnChatConfigLoaded();
 	}
-}
-
-public void LoadStageZones()
-{
-	char sQuery[256];
-	FormatEx(sQuery, 256, "SELECT id, data FROM mapzones WHERE type = %i and map = '%s'", Zone_Stage, gS_Map);
-	PrintToChatAll("%s", sQuery);
-	gH_SQL.Query(SQL_GetStageZone_Callback, sQuery,0, DBPrio_High);
-}
-
-public void SQL_GetStageZone_Callback(Database db, DBResultSet results, const char[] error, any data)
-{
-	if(results == null)
-	{
-		LogError("Timer (zones GetStageZone) SQL query failed. Reason: %s", error);
-		return;
-	}
-	
-	while(results.FetchRow())
-	{
-		int iZoneID = results.FetchInt(0);
-		int iStageNumber = results.FetchInt(1);
-		gI_StageZoneID[iStageNumber] = iZoneID;
-	} 
 }
 
 public void OnMapEnd()
@@ -802,11 +767,6 @@ public void Frame_HookTrigger(any data)
 		return;
 	}
 
-	if (StrContains(sName, "checkpoint") != -1)
-	{
-		return; // TODO
-	}
-
 	int zone = -1;
 	int track = Track_Main;
 
@@ -822,16 +782,7 @@ public void Frame_HookTrigger(any data)
 
 	if(StrContains(sName, "bonus") != -1)
 	{
-		// Parse out the X in mod_zone_bonus_X_start and mod_zone_bonus_X_end
-		char sections[8][8];
-		ExplodeString(sName, "_", sections, 8, 8, false);
-		track = StringToInt(sections[3]); // 0 on failure to parse. 0 is less than Track_Bonus
-
-		if (track < Track_Bonus || track > Track_Bonus_Last)
-		{
-			// Just ignore because there's either too many bonuses or X can be 0 and nobody told me
-			return;
-		}
+		track = Track_Bonus;
 	}
 
 	if(zone != -1)
@@ -2211,6 +2162,20 @@ public Action OnClientSayCommand(int client, const char[] command, const char[] 
 	return Plugin_Continue;
 }
 
+void GetTrackName(int client, int track, char[] output, int size)
+{
+	if(track < 0 || track >= TRACKS_SIZE)
+	{
+		FormatEx(output, size, "%T", "Track_Unknown", client);
+
+		return;
+	}
+
+	static char sTrack[16];
+	FormatEx(sTrack, 16, "Track_%d", track);
+	FormatEx(output, size, "%T", sTrack, client);
+}
+
 void UpdateTeleportZone(int client)
 {
 	float vTeleport[3];
@@ -2742,8 +2707,6 @@ public void SQL_CreateTable_Callback(Database db, DBResultSet results, const cha
 
 public void Shavit_OnRestart(int client, int track)
 {
-	gI_LastStage[client] = 0;
-
 	if(gCV_TeleportToStart.BoolValue)
 	{
 		int iIndex = -1;
@@ -3002,23 +2965,18 @@ public void StartTouchPost(int entity, int other)
 
 		case Zone_Stage:
 		{
-			int num = gA_ZoneCache[gI_EntityZone[entity]].iZoneData;
-			char special[sizeof(stylestrings_t::sSpecialString)];
-			Shavit_GetStyleStrings(Shavit_GetBhopStyle(other), sSpecialString, special, sizeof(special));
-
-			if(status != Timer_Stopped && Shavit_GetClientTrack(other) == gA_ZoneCache[gI_EntityZone[entity]].iZoneTrack && (num > gI_LastStage[other] || StrContains(special, "segments") != -1))
+			if(status != Timer_Stopped && Shavit_GetClientTrack(other) == gA_ZoneCache[gI_EntityZone[entity]].iZoneTrack)
 			{
-				gI_LastStage[other] = num;
 				char sTime[32];
 				FormatSeconds(Shavit_GetClientTime(other), sTime, 32, true);
 
 				char sMessage[255];
-				FormatEx(sMessage, 255, "%T", "ZoneStageEnter", other, gS_ChatStrings.sText, gS_ChatStrings.sVariable2, num, gS_ChatStrings.sText, gS_ChatStrings.sVariable2, sTime, gS_ChatStrings.sText);
+				FormatEx(sMessage, 255, "%T", "ZoneStageEnter", other, gS_ChatStrings.sText, gS_ChatStrings.sVariable2, gA_ZoneCache[gI_EntityZone[entity]].iZoneData, gS_ChatStrings.sText, gS_ChatStrings.sVariable2, sTime, gS_ChatStrings.sText);
 
 				Action aResult = Plugin_Continue;
 				Call_StartForward(gH_Forwards_StageMessage);
 				Call_PushCell(other);
-				Call_PushCell(num);
+				Call_PushCell(gA_ZoneCache[gI_EntityZone[entity]].iZoneData);
 				Call_PushStringEx(sMessage, 255, SM_PARAM_STRING_COPY, SM_PARAM_COPYBACK);
 				Call_PushCell(255);
 				Call_Finish(aResult);
@@ -3091,31 +3049,6 @@ public void TouchPost(int entity, int other)
 			else if(gA_ZoneCache[gI_EntityZone[entity]].iZoneTrack == Track_Main)
 			{
 				Shavit_StartTimer(other, Track_Main);
-			}
-		}
-		case Zone_Respawn:
-		{
-			CS_RespawnPlayer(other);
-		}
-
-		case Zone_Teleport:
-		{
-			TeleportEntity(other, gV_Destinations[gI_EntityZone[entity]], NULL_VECTOR, NULL_VECTOR);
-		}
-
-		case Zone_Slay:
-		{
-			Shavit_StopTimer(other);
-			ForcePlayerSuicide(other);
-			Shavit_PrintToChat(other, "%T", "ZoneSlayEnter", other, gS_ChatStrings.sWarning, gS_ChatStrings.sVariable2, gS_ChatStrings.sWarning);
-		}
-
-		case Zone_Stop:
-		{
-			if(Shavit_GetTimerStatus(other) != Timer_Stopped)
-			{
-				Shavit_StopTimer(other);
-				Shavit_PrintToChat(other, "%T", "ZoneStopEnter", other, gS_ChatStrings.sWarning, gS_ChatStrings.sVariable2, gS_ChatStrings.sWarning);
 			}
 		}
 	}
